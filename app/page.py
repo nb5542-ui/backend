@@ -6,13 +6,9 @@ from app.panel import Panel
 
 class Page(BaseModel):
     """
-    Layout container.
-    Holds panels, no story intelligence.
+    A page is a layout container for panels.
+    It has NO story intelligence itself.
     """
     id: str = Field(default_factory=new_id)
-
-    # Order inside chapter (1-based)
-    order: int = 1
-
-    # Panels on this page
+    order: int
     panels: List[Panel] = Field(default_factory=list)
