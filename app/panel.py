@@ -15,7 +15,7 @@ class Panel(BaseModel):
     id: str = Field(default_factory=new_id)
 
     story_beat: str
-    tension: int = 30  # default calm-forward motion
+    tension: int = 30
 
     narration: str = ""
     dialogue: str = ""

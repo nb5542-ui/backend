@@ -6,106 +6,76 @@ from app.page import Page
 from app.panel import Panel
 
 from app.store import STORIES
-from app.utils.beats import STORY_BEATS
+from app.utils.beats import STORY_BEATS, recommend_beats
 from app.utils.pacing import is_valid_progression
 
 
 app = FastAPI(
     title="AI Manga Story Engine",
-    version="0.2.0"
+    version="0.3.0"
 )
 
-# --------------------------------------------------
-# HEALTH
-# --------------------------------------------------
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
 
-# --------------------------------------------------
-# DISCOVERY / INTELLIGENCE
-# --------------------------------------------------
-
 @app.get("/beats")
 def list_story_beats():
-    """
-    List all supported story beats.
-    Used by frontend / AI planners later.
-    """
     return sorted(STORY_BEATS)
 
 
-# --------------------------------------------------
-# STORY ENDPOINTS
-# --------------------------------------------------
-
 @app.post("/stories", response_model=Storybook)
 def create_story():
-    """
-    Create a new empty story.
-    """
     story = Storybook()
     STORIES[story.id] = story
     return story
 
 
-@app.get("/stories", response_model=list[Storybook])
-def list_stories():
-    """
-    List all stories.
-    """
-    return list(STORIES.values())
-
-
 @app.get("/stories/{story_id}", response_model=Storybook)
 def get_story(story_id: str):
-    """
-    Get a single story by ID.
-    """
     story = STORIES.get(story_id)
     if not story:
-        raise HTTPException(status_code=404, detail="Story not found")
+        raise HTTPException(404, "Story not found")
     return story
 
 
-# --------------------------------------------------
-# CHAPTER ENDPOINTS
-# --------------------------------------------------
+@app.put("/stories/{story_id}/intent")
+def update_story_intent(story_id: str, intent: dict):
+    story = STORIES.get(story_id)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    story.intent = story.intent.copy(update=intent)
+    return story.intent
+
+
+@app.get("/stories/{story_id}/intent")
+def get_story_intent(story_id: str):
+    story = STORIES.get(story_id)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    return story.intent
+
 
 @app.post("/stories/{story_id}/chapters", response_model=Chapter)
 def add_chapter(story_id: str):
-    """
-    Add a chapter to a story.
-    """
     story = STORIES.get(story_id)
     if not story:
-        raise HTTPException(status_code=404, detail="Story not found")
-
-    chapter = Chapter(
-        order=len(story.chapters) + 1
-    )
-
+        raise HTTPException(404, "Story not found")
+    chapter = Chapter(order=len(story.chapters) + 1)
     story.chapters.append(chapter)
     return chapter
 
-
-# --------------------------------------------------
-# PAGE ENDPOINTS
-# --------------------------------------------------
 
 @app.post(
     "/stories/{story_id}/chapters/{chapter_id}/pages",
     response_model=Page
 )
 def add_page(story_id: str, chapter_id: str):
-    """
-    Add a page to a chapter.
-    """
     story = STORIES.get(story_id)
     if not story:
-        raise HTTPException(status_code=404, detail="Story not found")
+        raise HTTPException(404, "Story not found")
 
     for chapter in story.chapters:
         if chapter.id == chapter_id:
@@ -113,12 +83,8 @@ def add_page(story_id: str, chapter_id: str):
             chapter.pages.append(page)
             return page
 
-    raise HTTPException(status_code=404, detail="Chapter not found")
+    raise HTTPException(404, "Chapter not found")
 
-
-# --------------------------------------------------
-# PANEL ENDPOINTS (STORY INTELLIGENCE LIVES HERE)
-# --------------------------------------------------
 
 @app.post(
     "/stories/{story_id}/chapters/{chapter_id}/pages/{page_id}/panels",
@@ -131,28 +97,20 @@ def add_panel(
     story_beat: str,
     tension: int = 30
 ):
-    """
-    Add a panel to a page with narrative validation.
-    """
-
     story = STORIES.get(story_id)
     if not story:
-        raise HTTPException(status_code=404, detail="Story not found")
+        raise HTTPException(404, "Story not found")
 
     for chapter in story.chapters:
         if chapter.id == chapter_id:
             for page in chapter.pages:
                 if page.id == page_id:
 
-                    # Enforce pacing progression
-                    prev_tension = None
-                    if page.panels:
-                        prev_tension = page.panels[-1].tension
-
-                    if not is_valid_progression(prev_tension, tension):
+                    prev = page.panels[-1].tension if page.panels else None
+                    if not is_valid_progression(prev, tension):
                         raise HTTPException(
-                            status_code=400,
-                            detail="Invalid narrative tension jump"
+                            400,
+                            "Invalid narrative tension jump"
                         )
 
                     panel = Panel(
@@ -163,7 +121,32 @@ def add_panel(
                     page.panels.append(panel)
                     return panel
 
-            raise HTTPException(status_code=404, detail="Page not found")
+    raise HTTPException(404, "Target not found")
 
-    raise HTTPException(status_code=404, detail="Chapter not found")
 
+@app.post("/stories/{story_id}/beats/recommend")
+def recommend_story_beats(story_id: str):
+    story = STORIES.get(story_id)
+    if not story:
+        raise HTTPException(404, "Story not found")
+
+    beats_used = []
+    total_panels = 0
+
+    for chapter in story.chapters:
+        for page in chapter.pages:
+            for panel in page.panels:
+                beats_used.append(panel.story_beat)
+                total_panels += 1
+
+    story_progress = min(1.0, total_panels / 50)
+
+    return {
+        "story_progress": story_progress,
+        "intent": story.intent,
+        "recommended_beats": recommend_beats(
+            story_progress,
+            set(beats_used),
+            story.intent.dict()
+        )
+    }
