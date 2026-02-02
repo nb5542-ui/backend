@@ -1,8 +1,6 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from typing import Dict
 from app.utils.ids import new_id
-from app.utils.beats import is_valid_beat
-from app.utils.pacing import is_valid_tension
 
 
 class VisualIntent(BaseModel):
@@ -15,7 +13,7 @@ class Panel(BaseModel):
     id: str = Field(default_factory=new_id)
 
     story_beat: str
-    tension: int = 30
+    tension: int
 
     narration: str = ""
     dialogue: str = ""
@@ -24,15 +22,3 @@ class Panel(BaseModel):
 
     locked: bool = False
     metadata: Dict = {}
-
-    @validator("story_beat")
-    def validate_story_beat(cls, v):
-        if not is_valid_beat(v):
-            raise ValueError(f"Invalid story beat: '{v}'")
-        return v
-
-    @validator("tension")
-    def validate_tension(cls, v):
-        if not is_valid_tension(v):
-            raise ValueError("Tension must be between 0 and 100")
-        return v

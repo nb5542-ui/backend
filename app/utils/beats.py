@@ -1,9 +1,17 @@
 from typing import Dict, List, Set
 
+from app.utils.beat_coupling import coupling_score
 
+
+# -----------------------------
+# Beat Metadata Type
+# -----------------------------
 Beat = Dict[str, object]
 
 
+# -----------------------------
+# Beat Registry
+# -----------------------------
 STORY_BEATS: Dict[str, Beat] = {
     "introduction": {
         "emotional_shift": ["curiosity"],
@@ -68,32 +76,52 @@ STORY_BEATS: Dict[str, Beat] = {
 }
 
 
+# -----------------------------
+# Validation
+# -----------------------------
 def is_valid_beat(beat: str) -> bool:
     return bool(beat) and beat in STORY_BEATS
 
 
+# -----------------------------
+# Structural Filtering
+# -----------------------------
 def filter_valid_beats(
     story_progress: float,
     beats_used: Set[str]
 ) -> List[str]:
     valid = []
+
     for beat_id, beat in STORY_BEATS.items():
         if beat_id in beats_used:
             continue
+
         min_p, max_p = beat["preferred_position"]
         if min_p <= story_progress <= max_p:
             valid.append(beat_id)
+
     return valid
 
 
+# -----------------------------
+# Beat Scoring (Intent + Coupling)
+# -----------------------------
 def score_beat(
     beat_id: str,
     beat_data: dict,
-    intent: dict
+    intent: dict,
+    previous_beats: List[str]
 ) -> int:
     score = 0
 
-    # Narrative goal bias
+    # -----------------------------
+    # Beat Coupling Bias
+    # -----------------------------
+    score += coupling_score(previous_beats, beat_id)
+
+    # -----------------------------
+    # Narrative Goal Bias
+    # -----------------------------
     goal_map = {
         "psychological_descent": {
             "conflict": 2,
@@ -111,18 +139,25 @@ def score_beat(
     if goal in goal_map:
         score += goal_map[goal].get(beat_id, 0)
 
-    # Emotional targets
+    # -----------------------------
+    # Emotional Targets
+    # -----------------------------
     for emotion in intent.get("emotional_targets", []):
         if emotion in beat_data["emotional_shift"]:
             score += 1
 
-    # Theme affinity
+    # -----------------------------
+    # Theme Affinity
+    # -----------------------------
     for theme in intent.get("themes", []):
         if theme in beat_data["theme_affinity"]:
             score += 1
 
-    # Pacing bias
+    # -----------------------------
+    # Pacing Bias
+    # -----------------------------
     pacing = intent.get("pacing_profile", {}).get("overall", "balanced")
+
     if pacing == "slow-burn" and beat_data["intensity"] == "low":
         score += 1
     if pacing == "fast" and beat_data["intensity"] in {"high", "very_high"}:
@@ -131,10 +166,14 @@ def score_beat(
     return score
 
 
+# -----------------------------
+# Beat Recommendation
+# -----------------------------
 def recommend_beats(
     story_progress: float,
     beats_used: Set[str],
-    intent: dict
+    intent: dict,
+    previous_beats: List[str]
 ) -> List[dict]:
     candidates = filter_valid_beats(story_progress, beats_used)
 
@@ -145,7 +184,8 @@ def recommend_beats(
             "score": score_beat(
                 beat_id,
                 STORY_BEATS[beat_id],
-                intent
+                intent,
+                previous_beats
             )
         })
 

@@ -4,27 +4,35 @@ from app.storybook import Storybook
 from app.chapter import Chapter
 from app.page import Page
 from app.panel import Panel
-
 from app.store import STORIES
-from app.utils.beats import STORY_BEATS, recommend_beats
-from app.utils.pacing import is_valid_progression
+
+from app.utils.beats import STORY_BEATS, is_valid_beat
+from app.utils.pacing import is_valid_tension, is_valid_progression
+
+app = FastAPI(title="AI Manga Story Engine", version="0.5.0")
 
 
-app = FastAPI(
-    title="AI Manga Story Engine",
-    version="0.3.0"
-)
-
+# ----------------------------
+# HEALTH
+# ----------------------------
 
 @app.get("/health")
-def health_check():
+def health():
     return {"status": "ok"}
 
 
+# ----------------------------
+# DISCOVERY
+# ----------------------------
+
 @app.get("/beats")
-def list_story_beats():
+def list_beats():
     return sorted(STORY_BEATS)
 
+
+# ----------------------------
+# STORY
+# ----------------------------
 
 @app.post("/stories", response_model=Storybook)
 def create_story():
@@ -33,36 +41,12 @@ def create_story():
     return story
 
 
-@app.get("/stories/{story_id}", response_model=Storybook)
-def get_story(story_id: str):
-    story = STORIES.get(story_id)
-    if not story:
-        raise HTTPException(404, "Story not found")
-    return story
-
-
-@app.put("/stories/{story_id}/intent")
-def update_story_intent(story_id: str, intent: dict):
-    story = STORIES.get(story_id)
-    if not story:
-        raise HTTPException(404, "Story not found")
-    story.intent = story.intent.copy(update=intent)
-    return story.intent
-
-
-@app.get("/stories/{story_id}/intent")
-def get_story_intent(story_id: str):
-    story = STORIES.get(story_id)
-    if not story:
-        raise HTTPException(404, "Story not found")
-    return story.intent
-
-
 @app.post("/stories/{story_id}/chapters", response_model=Chapter)
 def add_chapter(story_id: str):
     story = STORIES.get(story_id)
     if not story:
         raise HTTPException(404, "Story not found")
+
     chapter = Chapter(order=len(story.chapters) + 1)
     story.chapters.append(chapter)
     return chapter
@@ -86,6 +70,10 @@ def add_page(story_id: str, chapter_id: str):
     raise HTTPException(404, "Chapter not found")
 
 
+# ----------------------------
+# PANEL (FINAL, SAFE VERSION)
+# ----------------------------
+
 @app.post(
     "/stories/{story_id}/chapters/{chapter_id}/pages/{page_id}/panels",
     response_model=Panel
@@ -97,9 +85,23 @@ def add_panel(
     story_beat: str,
     tension: int = 30
 ):
+    # ---- story lookup
     story = STORIES.get(story_id)
     if not story:
         raise HTTPException(404, "Story not found")
+
+    # ---- VALIDATION (EXPLICIT & SAFE)
+    if not is_valid_beat(story_beat):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid story beat: {story_beat}"
+        )
+
+    if not is_valid_tension(tension):
+        raise HTTPException(
+            status_code=422,
+            detail="Tension must be between 0 and 100"
+        )
 
     for chapter in story.chapters:
         if chapter.id == chapter_id:
@@ -109,8 +111,8 @@ def add_panel(
                     prev = page.panels[-1].tension if page.panels else None
                     if not is_valid_progression(prev, tension):
                         raise HTTPException(
-                            400,
-                            "Invalid narrative tension jump"
+                            status_code=400,
+                            detail="Invalid narrative tension jump"
                         )
 
                     panel = Panel(
@@ -122,31 +124,3 @@ def add_panel(
                     return panel
 
     raise HTTPException(404, "Target not found")
-
-
-@app.post("/stories/{story_id}/beats/recommend")
-def recommend_story_beats(story_id: str):
-    story = STORIES.get(story_id)
-    if not story:
-        raise HTTPException(404, "Story not found")
-
-    beats_used = []
-    total_panels = 0
-
-    for chapter in story.chapters:
-        for page in chapter.pages:
-            for panel in page.panels:
-                beats_used.append(panel.story_beat)
-                total_panels += 1
-
-    story_progress = min(1.0, total_panels / 50)
-
-    return {
-        "story_progress": story_progress,
-        "intent": story.intent,
-        "recommended_beats": recommend_beats(
-            story_progress,
-            set(beats_used),
-            story.intent.dict()
-        )
-    }

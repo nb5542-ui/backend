@@ -1,5 +1,3 @@
-# app/utils/pacing.py
-
 MAX_TENSION_JUMP = 30
 
 
@@ -8,10 +6,6 @@ def is_valid_tension(value: int) -> bool:
 
 
 def is_valid_progression(prev: int | None, current: int) -> bool:
-    """
-    Prevent unrealistic jumps in tension.
-    """
     if prev is None:
         return True
-
     return abs(current - prev) <= MAX_TENSION_JUMP
