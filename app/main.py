@@ -3,36 +3,41 @@ from fastapi import FastAPI, HTTPException
 from app.storybook import Storybook
 from app.chapter import Chapter
 from app.page import Page
-from app.panel import Panel
+from app.panel import Panel, PanelCreate
+from app.character import Character
+
 from app.store import STORIES
-
-from app.utils.beats import STORY_BEATS, is_valid_beat
-from app.utils.pacing import is_valid_tension, is_valid_progression
-
-app = FastAPI(title="AI Manga Story Engine", version="0.5.0")
+from app.utils.beats import STORY_BEATS
+from app.utils.pacing import is_valid_progression
+from app.utils.emotion_drift import compute_emotional_drift
 
 
-# ----------------------------
+app = FastAPI(
+    title="AI Manga Story Engine",
+    version="0.4.0"
+)
+
+# --------------------------------------------------
 # HEALTH
-# ----------------------------
+# --------------------------------------------------
 
 @app.get("/health")
-def health():
+def health_check():
     return {"status": "ok"}
 
 
-# ----------------------------
+# --------------------------------------------------
 # DISCOVERY
-# ----------------------------
+# --------------------------------------------------
 
 @app.get("/beats")
-def list_beats():
+def list_story_beats():
     return sorted(STORY_BEATS)
 
 
-# ----------------------------
+# --------------------------------------------------
 # STORY
-# ----------------------------
+# --------------------------------------------------
 
 @app.post("/stories", response_model=Storybook)
 def create_story():
@@ -40,6 +45,49 @@ def create_story():
     STORIES[story.id] = story
     return story
 
+
+@app.get("/stories", response_model=list[Storybook])
+def list_stories():
+    return list(STORIES.values())
+
+
+@app.get("/stories/{story_id}", response_model=Storybook)
+def get_story(story_id: str):
+    story = STORIES.get(story_id)
+    if not story:
+        raise HTTPException(404, "Story not found")
+    return story
+
+
+# --------------------------------------------------
+# CHARACTERS  ✅ SINGLE SOURCE OF TRUTH
+# --------------------------------------------------
+
+@app.post("/stories/{story_id}/characters", response_model=Character)
+def add_character(story_id: str, character: Character):
+    story = STORIES.get(story_id)
+    if not story:
+        raise HTTPException(404, "Story not found")
+
+    story.characters.append(character)
+
+    print("DEBUG characters:", [c.id for c in story.characters])
+
+    return character
+
+
+@app.get("/stories/{story_id}/characters", response_model=list[Character])
+def list_characters(story_id: str):
+    story = STORIES.get(story_id)
+    if not story:
+        raise HTTPException(404, "Story not found")
+
+    return story.characters
+
+
+# --------------------------------------------------
+# CHAPTERS
+# --------------------------------------------------
 
 @app.post("/stories/{story_id}/chapters", response_model=Chapter)
 def add_chapter(story_id: str):
@@ -51,6 +99,10 @@ def add_chapter(story_id: str):
     story.chapters.append(chapter)
     return chapter
 
+
+# --------------------------------------------------
+# PAGES
+# --------------------------------------------------
 
 @app.post(
     "/stories/{story_id}/chapters/{chapter_id}/pages",
@@ -70,9 +122,9 @@ def add_page(story_id: str, chapter_id: str):
     raise HTTPException(404, "Chapter not found")
 
 
-# ----------------------------
-# PANEL (FINAL, SAFE VERSION)
-# ----------------------------
+# --------------------------------------------------
+# PANELS (WITH CHARACTER EMOTIONAL DRIFT)
+# --------------------------------------------------
 
 @app.post(
     "/stories/{story_id}/chapters/{chapter_id}/pages/{page_id}/panels",
@@ -82,45 +134,57 @@ def add_panel(
     story_id: str,
     chapter_id: str,
     page_id: str,
-    story_beat: str,
-    tension: int = 30
+    payload: PanelCreate
 ):
-    # ---- story lookup
     story = STORIES.get(story_id)
     if not story:
         raise HTTPException(404, "Story not found")
-
-    # ---- VALIDATION (EXPLICIT & SAFE)
-    if not is_valid_beat(story_beat):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid story beat: {story_beat}"
-        )
-
-    if not is_valid_tension(tension):
-        raise HTTPException(
-            status_code=422,
-            detail="Tension must be between 0 and 100"
-        )
 
     for chapter in story.chapters:
         if chapter.id == chapter_id:
             for page in chapter.pages:
                 if page.id == page_id:
 
-                    prev = page.panels[-1].tension if page.panels else None
-                    if not is_valid_progression(prev, tension):
+                    prev_tension = (
+                        page.panels[-1].tension if page.panels else None
+                    )
+
+                    if not is_valid_progression(prev_tension, payload.tension):
                         raise HTTPException(
                             status_code=400,
                             detail="Invalid narrative tension jump"
                         )
 
-                    panel = Panel(
-                        story_beat=story_beat,
-                        tension=tension
-                    )
-
+                    panel = Panel(**payload.model_dump())
                     page.panels.append(panel)
+
+                    # 🔥 APPLY EMOTIONAL DRIFT
+                    for character in story.characters:
+                        if character.id in panel.characters_present:
+                            character.emotional_state = compute_emotional_drift(
+                                current_state=character.emotional_state,
+                                story_beat=panel.story_beat,
+                                tension=panel.tension,
+                                is_focus=(character.id == panel.focus_character)
+                            )
+
                     return panel
 
-    raise HTTPException(404, "Target not found")
+    raise HTTPException(404, "Page not found")
+
+
+# --------------------------------------------------
+# CHARACTER EMOTION INSPECTION (STEP 3)
+# --------------------------------------------------
+
+@app.get("/stories/{story_id}/characters/{character_id}/emotion")
+def get_character_emotion(story_id: str, character_id: str):
+    story = STORIES.get(story_id)
+    if not story:
+        raise HTTPException(404, "Story not found")
+
+    for character in story.characters:
+        if character.id == character_id:
+            return character.emotional_state
+
+    raise HTTPException(404, "Character not found")

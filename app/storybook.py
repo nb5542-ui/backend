@@ -1,8 +1,9 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict
+
 from app.utils.ids import new_id
 from app.chapter import Chapter
-from app.story_intent import StoryIntent
+from app.character import Character
 
 
 class Storybook(BaseModel):
@@ -19,6 +20,7 @@ class Storybook(BaseModel):
         }
     )
 
-    intent: StoryIntent = Field(default_factory=StoryIntent)
-
     chapters: List[Chapter] = Field(default_factory=list)
+
+    # ✅ THIS WAS MISSING
+    characters: List[Character] = Field(default_factory=list)
