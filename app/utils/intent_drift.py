@@ -1,95 +1,122 @@
-from typing import List, Dict
-from app.utils.beats import STORY_BEATS
+from typing import Dict, List
+from statistics import mean
+
+from app.storybook import Storybook
+from app.utils.story_intent import StoryIntent
 
 
-def detect_intent_drift(
-    recent_beats: List[str],
-    intent: Dict,
-    window_size: int = 5
-) -> Dict:
+def clamp(v: float, lo=0.0, hi=1.0):
+    return max(lo, min(hi, v))
+
+
+def analyze_intent_drift(story: Storybook) -> Dict:
     """
-    Analyze recent beats and detect drift from story intent.
-    Returns warnings, not errors.
+    Detects divergence between declared story intent
+    and actual narrative execution.
+    Read-only diagnostics.
     """
 
-    recent_beats = recent_beats[-window_size:]
+    if not story.intent:
+        return {
+            "drift_detected": False,
+            "severity": "none",
+            "score": 0.0,
+            "warnings": ["No story intent declared"]
+        }
 
-    emotional_hits = {}
-    theme_hits = {}
-    intensity_levels = []
+    intent: StoryIntent = story.intent
 
     # -----------------------------
-    # Aggregate signals
+    # Collect execution signals
     # -----------------------------
-    for beat_id in recent_beats:
-        beat = STORY_BEATS.get(beat_id)
-        if not beat:
-            continue
+    tensions = []
+    emotion_magnitudes = []
+    relationship_deltas = []
 
-        for emotion in beat["emotional_shift"]:
-            emotional_hits[emotion] = emotional_hits.get(emotion, 0) + 1
+    recent_beats = []
 
-        for theme in beat["theme_affinity"]:
-            theme_hits[theme] = theme_hits.get(theme, 0) + 1
+    for chapter in story.chapters:
+        for page in chapter.pages:
+            for panel in page.panels:
+                tensions.append(panel.tension)
+                recent_beats.append(panel.story_beat)
 
-        intensity_levels.append(beat["intensity"])
+                # Emotion drift magnitude
+                if hasattr(panel, "emotion_drift"):
+                    emotion_magnitudes.append(
+                        sum(abs(v) for v in panel.emotion_drift.values())
+                    )
+
+                # Relationship drift magnitude
+                if hasattr(panel, "relationship_drift"):
+                    relationship_deltas.extend(
+                        abs(v) for v in panel.relationship_drift.values()
+                    )
 
     warnings = []
 
     # -----------------------------
-    # Emotional Drift
+    # TENSION DRIFT
     # -----------------------------
-    target_emotions = set(intent.get("emotional_targets", []))
-    if target_emotions:
-        dominant_emotions = {
-            e for e, count in emotional_hits.items() if count >= 2
-        }
+    tension_drift = 0.0
+    if tensions:
+        avg_tension = mean(tensions)
+        low, high = intent.target_tension_range
 
-        if dominant_emotions and not dominant_emotions & target_emotions:
-            warnings.append({
-                "type": "emotional_drift",
-                "message": (
-                    f"Recent emotions {list(dominant_emotions)} "
-                    f"do not align with intent {list(target_emotions)}"
-                )
-            })
+        if not (low <= avg_tension <= high):
+            tension_drift = clamp(
+                min(abs(avg_tension - low), abs(avg_tension - high)) / 100
+            )
+            warnings.append(
+                f"Average tension ({avg_tension:.1f}) outside intent range {low}-{high}"
+            )
 
     # -----------------------------
-    # Thematic Drift
+    # EMOTIONAL DRIFT
     # -----------------------------
-    target_themes = set(intent.get("themes", []))
-    if target_themes:
-        dominant_themes = {
-            t for t, count in theme_hits.items() if count >= 2
-        }
+    emotion_drift = 0.0
+    if emotion_magnitudes:
+        avg_emotion = mean(emotion_magnitudes)
+        expected = intent.emotional_volatility
+        emotion_drift = clamp(abs(avg_emotion - expected))
 
-        if dominant_themes and not dominant_themes & target_themes:
-            warnings.append({
-                "type": "theme_drift",
-                "message": (
-                    f"Recent themes {list(dominant_themes)} "
-                    f"do not align with intent {list(target_themes)}"
-                )
-            })
+        if emotion_drift > 0.4:
+            warnings.append(
+                "Emotional volatility diverges from declared intent"
+            )
 
     # -----------------------------
-    # Pacing Drift
+    # RELATIONSHIP DRIFT
     # -----------------------------
-    pacing = intent.get("pacing_profile", {}).get("overall")
+    relationship_drift = 0.0
+    if intent.relationship_focus and relationship_deltas:
+        total = sum(relationship_deltas)
+        if total == 0:
+            relationship_drift = 1.0
+            warnings.append("Declared relationship focus not reflected in panels")
 
-    if pacing == "slow-burn" and intensity_levels.count("high") >= 3:
-        warnings.append({
-            "type": "pacing_drift",
-            "message": "Too many high-intensity beats for slow-burn pacing"
-        })
+    # -----------------------------
+    # FINAL SCORE
+    # -----------------------------
+    score = clamp(
+        (tension_drift + emotion_drift + relationship_drift) / 3
+    )
 
-    if pacing == "fast" and intensity_levels.count("low") >= 3:
-        warnings.append({
-            "type": "pacing_drift",
-            "message": "Too many low-intensity beats for fast pacing"
-        })
+    severity = (
+        "none" if score < 0.15 else
+        "mild" if score < 0.35 else
+        "moderate" if score < 0.6 else
+        "severe"
+    )
 
     return {
-        "drift_detected": bool(warnings),
+        "drift_detected": score > 0.15,
+        "severity": severity,
+        "score": round(score, 3),
+        "components": {
+            "tension": round(tension_drift, 3),
+            "emotion": round(emotion_drift, 3),
+            "relationship": round(relationship_drift, 3),
+        },
         "warnings": warnings
     }
