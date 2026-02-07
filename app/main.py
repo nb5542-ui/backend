@@ -1,54 +1,62 @@
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from app.storybook import Storybook
-from app.utils.character_arc import analyze_character_arc
-from app.utils.beat_explanation import explain_beat
-
-
 from app.chapter import Chapter
 from app.page import Page
 from app.panel import Panel, PanelCreate
-from app.utils.intent_drift import analyze_intent_drift
-
 from app.character import Character, Relationship
 
 from app.store import STORIES
+
 from app.utils.beats import STORY_BEATS
 from app.utils.pacing import is_valid_progression
 from app.utils.emotion_drift import compute_emotional_drift
 from app.utils.relationship_drift import compute_relationship_drift
+from app.utils.scene_tracking import assign_scene, detect_scene_warnings
+from app.utils.story_intent import StoryIntent
+from app.utils.intent_timeline import build_intent_timeline
+from app.utils.beat_explanation import explain_beat
 
 
 app = FastAPI(
     title="AI Manga Story Engine",
-    version="0.5.0"
+    version="0.8.1"
 )
 
-# --------------------------------------------------
+# ==================================================
+# REQUEST MODELS
+# ==================================================
+
+class CreateStoryRequest(BaseModel):
+    title: str
+
+
+# ==================================================
 # HEALTH
-# --------------------------------------------------
+# ==================================================
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
 
-# --------------------------------------------------
+# ==================================================
 # DISCOVERY
-# --------------------------------------------------
+# ==================================================
 
 @app.get("/beats")
 def list_story_beats():
     return sorted(STORY_BEATS)
 
 
-# --------------------------------------------------
+# ==================================================
 # STORY
-# --------------------------------------------------
+# ==================================================
 
 @app.post("/stories", response_model=Storybook)
-def create_story():
-    story = Storybook()
+def create_story(payload: CreateStoryRequest):
+    story = Storybook(title=payload.title)
     STORIES[story.id] = story
     return story
 
@@ -61,9 +69,26 @@ def get_story(story_id: str):
     return story
 
 
-# --------------------------------------------------
+# ==================================================
+# STORY INTENT
+# ==================================================
+
+@app.post("/stories/{story_id}/intent")
+def set_story_intent(story_id: str, intent: StoryIntent):
+    story = STORIES.get(story_id)
+    if not story:
+        raise HTTPException(404, "Story not found")
+
+    story.intent = intent
+    return {
+        "message": "Story intent set successfully",
+        "intent": intent
+    }
+
+
+# ==================================================
 # CHARACTERS
-# --------------------------------------------------
+# ==================================================
 
 @app.post("/stories/{story_id}/characters", response_model=Character)
 def add_character(story_id: str, character: Character):
@@ -84,9 +109,9 @@ def list_characters(story_id: str):
     return story.characters
 
 
-# --------------------------------------------------
+# ==================================================
 # CHAPTERS
-# --------------------------------------------------
+# ==================================================
 
 @app.post("/stories/{story_id}/chapters", response_model=Chapter)
 def add_chapter(story_id: str):
@@ -99,14 +124,11 @@ def add_chapter(story_id: str):
     return chapter
 
 
-# --------------------------------------------------
+# ==================================================
 # PAGES
-# --------------------------------------------------
+# ==================================================
 
-@app.post(
-    "/stories/{story_id}/chapters/{chapter_id}/pages",
-    response_model=Page
-)
+@app.post("/stories/{story_id}/chapters/{chapter_id}/pages", response_model=Page)
 def add_page(story_id: str, chapter_id: str):
     story = STORIES.get(story_id)
     if not story:
@@ -121,9 +143,9 @@ def add_page(story_id: str, chapter_id: str):
     raise HTTPException(404, "Chapter not found")
 
 
-# --------------------------------------------------
-# PANELS (EMOTION + RELATIONSHIP DRIFT)
-# --------------------------------------------------
+# ==================================================
+# PANELS (CORE ENGINE LOGIC)
+# ==================================================
 
 @app.post(
     "/stories/{story_id}/chapters/{chapter_id}/pages/{page_id}/panels",
@@ -144,10 +166,7 @@ def add_panel(
             for page in chapter.pages:
                 if page.id == page_id:
 
-                    prev_tension = (
-                        page.panels[-1].tension if page.panels else None
-                    )
-
+                    prev_tension = page.panels[-1].tension if page.panels else None
                     if not is_valid_progression(prev_tension, payload.tension):
                         raise HTTPException(
                             status_code=400,
@@ -155,11 +174,14 @@ def add_panel(
                         )
 
                     panel = Panel(**payload.model_dump())
+
+                    # Scene awareness
+                    previous_panel = page.panels[-1] if page.panels else None
+                    assign_scene(panel, previous_panel)
+
                     page.panels.append(panel)
 
-                    # -----------------------------
-                    # STEP 3 — EMOTIONAL DRIFT
-                    # -----------------------------
+                    # Emotional drift
                     for character in story.characters:
                         if character.id in panel.characters_present:
                             character.emotional_state = compute_emotional_drift(
@@ -169,11 +191,8 @@ def add_panel(
                                 is_focus=(character.id == panel.focus_character)
                             )
 
-                    # -----------------------------
-                    # STEP 4 — RELATIONSHIP DRIFT
-                    # -----------------------------
+                    # Relationship drift
                     present_ids = panel.characters_present
-
                     for source in story.characters:
                         if source.id not in present_ids:
                             continue
@@ -183,15 +202,15 @@ def add_panel(
                                 continue
 
                             rel = next(
-                                (r for r in source.relationships
-                                 if r.target_character_id == target.id),
+                                (
+                                    r for r in source.relationships
+                                    if r.target_character_id == target.id
+                                ),
                                 None
                             )
 
                             if not rel:
-                                rel = Relationship(
-                                    target_character_id=target.id
-                                )
+                                rel = Relationship(target_character_id=target.id)
                                 source.relationships.append(rel)
 
                             updated = compute_relationship_drift(
@@ -214,9 +233,9 @@ def add_panel(
     raise HTTPException(404, "Page not found")
 
 
-# --------------------------------------------------
+# ==================================================
 # DEBUG / INSPECTION
-# --------------------------------------------------
+# ==================================================
 
 @app.get("/stories/{story_id}/characters/{character_id}/emotion")
 def get_character_emotion(story_id: str, character_id: str):
@@ -224,11 +243,11 @@ def get_character_emotion(story_id: str, character_id: str):
     if not story:
         raise HTTPException(404, "Story not found")
 
-    for character in story.characters:
-        if character.id == character_id:
-            return character.emotional_state
+    character = story.get_character(character_id)
+    if not character:
+        raise HTTPException(404, "Character not found")
 
-    raise HTTPException(404, "Character not found")
+    return character.emotional_state
 
 
 @app.get("/stories/{story_id}/characters/{character_id}/relationships")
@@ -237,57 +256,57 @@ def get_character_relationships(story_id: str, character_id: str):
     if not story:
         raise HTTPException(404, "Story not found")
 
-    for character in story.characters:
-        if character.id == character_id:
-            return character.relationships
+    character = story.get_character(character_id)
+    if not character:
+        raise HTTPException(404, "Character not found")
 
-    raise HTTPException(404, "Character not found")
-@app.get("/stories/{story_id}/intent-drift")
-def get_intent_drift(story_id: str):
+    return character.relationships
+
+
+# ==================================================
+# SCENE WARNINGS
+# ==================================================
+
+@app.get("/stories/{story_id}/scene-warnings")
+def get_scene_warnings(story_id: str):
     story = STORIES.get(story_id)
     if not story:
         raise HTTPException(404, "Story not found")
 
-    return analyze_intent_drift(story)
-# --------------------------------------------------
-# CHARACTER ARC (STEP 5)
-# --------------------------------------------------
+    return detect_scene_warnings(story)
 
-@app.get("/stories/{story_id}/characters/{character_id}/arc")
-def get_character_arc(story_id: str, character_id: str):
+
+# ==================================================
+# INTENT DRIFT TIMELINE
+# ==================================================
+
+@app.get("/stories/{story_id}/intent-timeline")
+def get_intent_timeline(story_id: str):
     story = STORIES.get(story_id)
     if not story:
         raise HTTPException(404, "Story not found")
 
-    return analyze_character_arc(story, character_id)
-# --------------------------------------------------
-# BEAT EXPLANATION (STEP 6)
-# --------------------------------------------------
+    if not story.intent:
+        return {
+            "message": "No intent defined for this story",
+            "timeline": []
+        }
 
-@app.get(
-    "/stories/{story_id}/chapters/{chapter_id}/pages/{page_id}/panels/{panel_id}/explain"
-)
-def explain_panel_beat(
-    story_id: str,
-    chapter_id: str,
-    page_id: str,
-    panel_id: str
-):
+    return build_intent_timeline(story)
+
+
+# ==================================================
+# BEAT EXPLANATION
+# ==================================================
+
+@app.get("/stories/{story_id}/panels/{panel_id}/beat-explanation")
+def get_beat_explanation(story_id: str, panel_id: str):
     story = STORIES.get(story_id)
     if not story:
         raise HTTPException(404, "Story not found")
 
-    for chapter in story.chapters:
-        if chapter.id != chapter_id:
-            continue
-        for page in chapter.pages:
-            if page.id != page_id:
-                continue
-            for panel in page.panels:
-                if panel.id == panel_id:
-                    return explain_beat(story, panel)
+    panel = story.find_panel(panel_id)
+    if not panel:
+        raise HTTPException(404, "Panel not found")
 
-    raise HTTPException(404, "Panel not found")
-
-
-
+    return explain_beat(story, panel)
