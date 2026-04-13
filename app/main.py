@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.storybook import Storybook
@@ -23,7 +24,13 @@ app = FastAPI(
     title="AI Manga Story Engine",
     version="0.8.1"
 )
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # dev only
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # ==================================================
 # REQUEST MODELS
 # ==================================================
@@ -39,6 +46,20 @@ class CreateStoryRequest(BaseModel):
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+# =========================================
+# GENERATE (NEW)
+# =========================================
+
+@app.post("/generate")
+async def generate(data: dict):
+    print("RECEIVED DATA:", data)
+
+    return {
+        "status": "success",
+        "message": "generation pipeline working",
+        "panel": data.get("panel_context", {})
+    }
 
 
 # ==================================================
