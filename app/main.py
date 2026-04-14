@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from app.services.generation_service import generate_panel
 from pydantic import BaseModel
 
 from app.storybook import Storybook
@@ -53,14 +54,9 @@ def health_check():
 
 @app.post("/generate")
 async def generate(data: dict):
-    print("RECEIVED DATA:", data)
+    result = generate_panel(data)
 
-    return {
-        "status": "success",
-        "message": "generation pipeline working",
-        "panel": data.get("panel_context", {})
-    }
-
+    return result
 
 # ==================================================
 # DISCOVERY
