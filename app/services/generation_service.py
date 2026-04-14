@@ -1,21 +1,43 @@
 import random
 
+from streamlit import context
+
 
 def mock_llm_response(context: dict):
     """
-    Temporary mock instead of real AI
+    Context-aware mock generation
     """
 
+    characters = context.get("character_context", [])
+    scene = context.get("scene_context", {})
+    narrative = context.get("narrative_state", {})
+
+    # Pick first character (for now)
+    character_name = characters[0]["name"] if characters else "Someone"
+
+    location = scene.get("location", "unknown place")
+    atmosphere = scene.get("atmosphere", "neutral")
+
+    emotion = narrative.get("emotional_drift", {}).get(character_name, "neutral")
+
+    # Basic logic
+    text = f"{character_name} stands in {location}, feeling {emotion}."
+    mood = atmosphere or "neutral"
+
     return {
-        "text": "Ryu looks at the enemy and speaks with intensity.",
-        "mood": "tense"
+        "text": text,
+        "mood": mood
     }
 
 
 def normalize_panel_output(raw: dict, context: dict):
-    """
-    Converts flexible AI output → strict panel schema
-    """
+
+    characters = context.get("character_context", [])
+
+    if characters and len(characters) > 0:
+        character_id = characters[0].get("id", "char_1")
+    else:
+        character_id = "char_1"
 
     panel_context = context.get("panel_context", {})
 
@@ -25,7 +47,7 @@ def normalize_panel_output(raw: dict, context: dict):
 
             "dialogue": [
                 {
-                    "character_id": "char_1",
+                    "character_id": character_id,
                     "text": raw.get("text", ""),
                     "tone": raw.get("mood", "neutral")
                 }
@@ -44,7 +66,7 @@ def normalize_panel_output(raw: dict, context: dict):
             "visual": {
                 "characters": [
                     {
-                        "id": "char_1",
+                        "id": character_id,
                         "pose": "standing",
                         "expression": raw.get("mood", "neutral")
                     }
