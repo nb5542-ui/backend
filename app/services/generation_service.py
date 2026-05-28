@@ -1,96 +1,144 @@
 import random
 
 from streamlit import context
+from openai import OpenAI
+from app.schemas.panel_schema import Panel
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-def mock_llm_response(context: dict):
+
+def call_openai(context: dict):
+
+    prompt = f"""
+    You are a professional manga panel generator.
+
+    Context:
+    {context}
+
+    Generate a complete panel.
     """
-    Context-aware mock generation
-    """
 
-    characters = context.get("character_context", [])
-    scene = context.get("scene_context", {})
-    narrative = context.get("narrative_state", {})
-
-    # Pick first character (for now)
-    character_name = characters[0]["name"] if characters else "Someone"
-
-    location = scene.get("location", "unknown place")
-    atmosphere = scene.get("atmosphere", "neutral")
-
-    emotion = narrative.get("emotional_drift", {}).get(character_name, "neutral")
-
-    # Basic logic
-    text = f"{character_name} stands in {location}, feeling {emotion}."
-    mood = atmosphere or "neutral"
-
-    return {
-        "text": text,
-        "mood": mood
+    panel_tool = {
+        "type": "function",
+        "function": {
+            "name": "generate_panel",
+            "description": "Generate a structured manga panel",
+            "parameters": Panel.model_json_schema()
+        }
     }
 
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": "You must output ONLY via the provided function. No text."
+            },
+            {"role": "user", "content": prompt}
+        ],
+        tools=[panel_tool],
+        tool_choice={
+            "type": "function",
+            "function": {"name": "generate_panel"}
+        }
+    )
 
-def normalize_panel_output(raw: dict, context: dict):
+    tool_call = response.choices[0].message.tool_calls[0]
+
+    raw_json = tool_call.function.arguments
+
+    # ✅ Strict validation (no parsing hacks)
+    panel = Panel.model_validate_json(raw_json)
+
+    return panel 
+
+
+def normalize_panel_output(panel: Panel, context: dict):
 
     characters = context.get("character_context", [])
-
-    if characters and len(characters) > 0:
-        character_id = characters[0].get("id", "char_1")
-    else:
-        character_id = "char_1"
-
     panel_context = context.get("panel_context", {})
+
+    # Map character names → IDs
+    name_to_id = {
+        c.get("name"): c.get("id")
+        for c in characters
+    }
+
+    def resolve_character_id(name):
+        return name_to_id.get(name, "char_1")
+
+    # ✅ Dialogue
+    dialogue = [
+        {
+            "character_id": resolve_character_id(d.speaker),
+            "text": d.text,
+            "tone": "neutral"  # can later map from emotion layer
+        }
+        for d in panel.dialogue
+    ]
+
+    # ✅ Action
+    action = [
+        {
+            "description": a.description,
+            "intensity": "medium"
+        }
+        for a in panel.action
+    ]
+
+    # ✅ Emotion (convert list → primary/secondary)
+    primary_emotion = panel.emotion[0].emotion if panel.emotion else "neutral"
+
+    emotion = {
+        "primary": primary_emotion,
+        "secondary": "focused"
+    }
+
+    # ✅ Visual
+    visual_characters = [
+        {
+            "id": resolve_character_id(name),
+            "pose": "dynamic",  # let AI drive later
+            "expression": primary_emotion
+        }
+        for name in panel.visual.characters
+    ]
+
+    visual = {
+        "characters": visual_characters,
+        "environment": panel.visual.setting,
+        "details": panel.visual.details,
+        "lighting": "cinematic",  # keep default but better wording
+        "mood": primary_emotion
+    }
+
+    # ✅ Camera
+    camera = {
+        "shot_type": panel.camera.shot_type,
+        "angle": panel.camera.angle,
+        "focus": "character"
+    }
 
     return {
         "panel": {
             "type": panel_context.get("panel_type", "dialogue"),
-
-            "dialogue": [
-                {
-                    "character_id": character_id,
-                    "text": raw.get("text", ""),
-                    "tone": raw.get("mood", "neutral")
-                }
-            ],
-
-            "action": {
-                "description": raw.get("text", ""),
-                "intensity": "medium"
-            },
-
-            "emotion": {
-                "primary": raw.get("mood", "neutral"),
-                "secondary": "focused"
-            },
-
-            "visual": {
-                "characters": [
-                    {
-                        "id": character_id,
-                        "pose": "standing",
-                        "expression": raw.get("mood", "neutral")
-                    }
-                ],
-                "environment": context.get("scene_context", {}).get("location", "unknown"),
-                "lighting": "dramatic",
-                "mood": raw.get("mood", "neutral")
-            },
-
-            "camera": {
-                "shot_type": "medium",
-                "angle": "eye-level",
-                "focus": "character"
-            }
+            "dialogue": dialogue,
+            "action": action,
+            "emotion": emotion,
+            "visual": visual,
+            "camera": camera
         }
     }
 
 
 def generate_panel(context: dict):
-    """
-    Main entry point
-    """
 
-    raw_output = mock_llm_response(context)
+    raw_output = call_openai(context)  # 🔥 real AI now
 
     structured_output = normalize_panel_output(raw_output, context)
 
